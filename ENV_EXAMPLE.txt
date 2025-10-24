@@ -1,0 +1,13 @@
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=ap-southeast-2
+
+S3_BUCKET=your-bucket
+S3_REGION=ap-southeast-2
+
+# 데이터/결과 프리픽스 (템플릿에서 {uid} 사용 가능)
+S3_MODELS_PREFIX=voice_blend/models/{uid}
+
+# 고정 리소스 설정
+DEFAULT_GPU=0
+DEFAULT_BATCH_SIZE=8
