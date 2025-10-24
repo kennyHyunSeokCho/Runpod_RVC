@@ -7,6 +7,7 @@ import tarfile
 import glob
 
 import boto3  # S3 접근 (IAM/ENV 사용)
+import shutil
 
 python = sys.executable
 
@@ -70,7 +71,8 @@ def run_train(model_name: str, batch_size: int, gpu: str, index_algorithm: str):
     """
     학습 실행: v2_core 트레이너 사용, 48kHz/에폭 500/중간저장 없음 강제
     """
-    trainer = os.path.join("rvc", "v2_core", "trainer.py")
+    # 한글 주석: 로컬 레이아웃 사용(동일 저장소)
+    trainer = os.path.join("trainer.py")
     cmd = [
         python,
         trainer,
@@ -94,9 +96,23 @@ def run_train(model_name: str, batch_size: int, gpu: str, index_algorithm: str):
     subprocess.run(list(map(str, cmd)))
 
     # 인덱스 생성
-    indexer = os.path.join("rvc", "v2_core", "index.py")
+    indexer = os.path.join("index.py")
     cmd_index = [python, indexer, os.path.join("logs", model_name), index_algorithm]
     subprocess.run(list(map(str, cmd_index)))
+
+
+def dir_nonempty(path: str) -> bool:
+    try:
+        return os.path.isdir(path) and any(os.scandir(path))
+    except FileNotFoundError:
+        return False
+
+
+def file_exists(path: str) -> bool:
+    try:
+        return os.path.isfile(path)
+    except Exception:
+        return False
 
 
 def s3_client(region: str | None = None, endpoint_url: str | None = None):
@@ -138,10 +154,14 @@ def s3_upload_artifacts(model_name: str, logs_dir: str, bucket: str, prefix: str
         files.append(tjson)
 
     # logs 전체 아카이브
+    os.makedirs(logs_dir, exist_ok=True)
     archive_path = os.path.join(logs_dir, f"{model_name}_logs.tar.gz")
-    with tarfile.open(archive_path, "w:gz") as tf:
-        tf.add(logs_dir, arcname=os.path.basename(logs_dir))
-    files.append(archive_path)
+    try:
+        with tarfile.open(archive_path, "w:gz") as tf:
+            tf.add(logs_dir, arcname=os.path.basename(logs_dir))
+        files.append(archive_path)
+    except Exception:
+        pass
 
     for f in files:
         key = os.path.join(prefix, os.path.basename(f))
@@ -157,6 +177,9 @@ def run_pipeline_uid(
     batch_size: int,
     gpu: str,
     index_algorithm: str,
+    cleanup_intermediate: bool = True,
+    skip_download_if_exists: bool = True,
+    cleanup_models: bool = True,
 ):
     """
     한글 주석: UID 기반 S3 파이프라인
@@ -199,18 +222,55 @@ def run_pipeline_uid(
     dataset_dir = os.path.join("assets", "datasets", model_name)
     os.makedirs(dataset_dir, exist_ok=True)
     local_mp3 = os.path.join(dataset_dir, f"{uid}.mp3")
-    s3_download_object(bucket, src_key, local_mp3, region, endpoint_url)
+    if skip_download_if_exists and file_exists(local_mp3):
+        print(f"Skip download: {local_mp3} already exists")
+    else:
+        s3_download_object(bucket, src_key, local_mp3, region, endpoint_url)
 
-    # 2) 전처리/특징추출(존재하면 실행, 없으면 core.py가 건너뜀)
-    run_preprocess(model_name, dataset_dir, 48000, os.cpu_count() or 4)
-    run_extract(model_name, "rmvpe", os.cpu_count() or 4, gpu, 48000, "contentvec", 2)
+    # 2) 전처리/특징추출: 산출물이 있으면 자동 스킵
+    logs_dir = os.path.join("logs", model_name)
+    sliced_dir = os.path.join(logs_dir, "sliced_audios")
+    extracted_dir = os.path.join(logs_dir, "extracted")
+
+    if dir_nonempty(sliced_dir):
+        print(f"Skip preprocess: found existing slices in {sliced_dir}")
+    else:
+        run_preprocess(model_name, dataset_dir, 48000, os.cpu_count() or 4)
+
+    if dir_nonempty(extracted_dir):
+        print(f"Skip extract: found existing features in {extracted_dir}")
+    else:
+        run_extract(model_name, "rmvpe", os.cpu_count() or 4, gpu, 48000, "contentvec", 2)
 
     # 3) 학습(+인덱스)
     run_train(model_name, batch_size, gpu, index_algorithm)
 
     # 4) 산출물 업로드
-    logs_dir = os.path.join("logs", model_name)
     s3_upload_artifacts(model_name, logs_dir, bucket, dst_prefix, region, endpoint_url)
+
+    # 5) 모델 산출물/로그 정리(기본 on): 업로드 후 logs/<model> 전체 정리
+    if cleanup_models:
+        try:
+            if os.path.isdir(logs_dir):
+                shutil.rmtree(logs_dir, ignore_errors=True)
+            print("Cleaned logs and model artifacts.")
+        except Exception as _:
+            pass
+    else:
+        # 모델 로그는 보존하되 중간 산출물만 정리
+        if cleanup_intermediate:
+            try:
+                if os.path.isdir(sliced_dir):
+                    shutil.rmtree(sliced_dir, ignore_errors=True)
+                if os.path.isdir(extracted_dir):
+                    shutil.rmtree(extracted_dir, ignore_errors=True)
+                print("Cleaned intermediate artifacts.")
+            except Exception as _:
+                pass
+
+    # 데이터셋 원본은 별도로 정리
+    if cleanup_intermediate and os.path.isdir(dataset_dir):
+        shutil.rmtree(dataset_dir, ignore_errors=True)
 
 
 def parse_args():
@@ -251,6 +311,9 @@ def parse_args():
     spipe.add_argument("--batch_size", type=int, default=8)
     spipe.add_argument("--gpu", default="0")
     spipe.add_argument("--index_algorithm", default="Auto")
+    spipe.add_argument("--cleanup_intermediate", type=lambda v: str(v).lower() not in ("0","false","no"), default=True)
+    spipe.add_argument("--skip_download_if_exists", type=lambda v: str(v).lower() not in ("0","false","no"), default=True)
+    spipe.add_argument("--cleanup_models", type=lambda v: str(v).lower() not in ("0","false","no"), default=True)
 
     return p.parse_args()
 
@@ -283,6 +346,9 @@ def main():
             batch_size=args.batch_size,
             gpu=args.gpu,
             index_algorithm=args.index_algorithm,
+            cleanup_intermediate=args.cleanup_intermediate,
+            skip_download_if_exists=args.skip_download_if_exists,
+            cleanup_models=args.cleanup_models,
         )
     else:
         print("사용법: preprocess | extract | train | index | pipeline 서브커맨드 중 하나를 선택하세요.")

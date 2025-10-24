@@ -10,4 +10,10 @@ tqdm>=4.66.0
 tensorboard>=2.14.0
 gdown>=5.2.0
 python-dotenv>=1.0.1
+librosa>=0.10.1
+soundfile>=0.12.1
+audioread>=3.0.0
+torchcrepe>=0.0.23
+noisereduce>=3.0.0
+wget>=3.2
 
