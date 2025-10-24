@@ -243,7 +243,7 @@ def parse_args():
     si.add_argument("--index_algorithm", default="Auto")
 
     spipe = sub.add_parser("pipeline")
-    spipe.add_argument("--model_name", required=True)
+    spipe.add_argument("--model_name", required=False, default=None)
     spipe.add_argument("--uid", required=True)
     spipe.add_argument("--bucket", required=False, default=os.environ.get("S3_BUCKET", ""))
     spipe.add_argument("--region", required=False, default=os.environ.get("S3_REGION", None))
@@ -272,8 +272,10 @@ def main():
         if not bucket:
             print("S3 버킷을 찾을 수 없습니다. --bucket 또는 S3_BUCKET 환경변수를 지정하세요.")
             sys.exit(1)
+        # 한글 주석: model_name이 없으면 uid를 사용
+        resolved_model_name = args.model_name or args.uid
         run_pipeline_uid(
-            model_name=args.model_name,
+            model_name=resolved_model_name,
             uid=args.uid,
             bucket=bucket,
             region=args.region,

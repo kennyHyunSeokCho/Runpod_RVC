@@ -123,7 +123,7 @@ DEFAULT_BATCH_SIZE=8
 EOF
 
 # 5-1) 한 번에 실행(UID 기반)
-python core.py pipeline --model_name my_model --uid my_uid
+python core.py pipeline --uid my_uid
 
 # 5-2) API 서버로 실행(선택)
 # uvicorn server:app --host 0.0.0.0 --port 8000
